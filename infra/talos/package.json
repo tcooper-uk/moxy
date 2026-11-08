@@ -1,0 +1,13 @@
+{
+    "name": "moxy-talos",
+    "main": "index.ts",
+    "devDependencies": {
+        "@types/node": "^18",
+        "typescript": "^5.0.0"
+    },
+    "dependencies": {
+        "@pulumi/pulumi": "^3.113.0",
+        "@muhlba91/pulumi-proxmoxve": "^8.6.0",
+        "@pulumiverse/talos": "^0.8.1"
+    }
+}

@@ -1,3 +1,5 @@
-/bin/
-/node_modules/
-infra/Pulumi.dev.yaml
+.DS_Store
+
+node_modules/
+bin/
+Pulumi.dev.yaml
