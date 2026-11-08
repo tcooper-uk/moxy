@@ -6,18 +6,16 @@ import * as proxmoxve from "@muhlba91/pulumi-proxmoxve";
 // ---------------------------------------------------------------------------
 // Proxmox provider config — set via:
 //   pulumi config set proxmox:endpoint  https://<pve-host>:8006/
-//   pulumi config set proxmox:apiToken  'root@pam!pulumi=<uuid>' --secret
+//   pulumi config set proxmox:apiToken  'user@realm!tokenid=<uuid>' --secret
 //   pulumi config set proxmox:insecure  true          # if using self-signed TLS
 const pveCfg = new pulumi.Config("proxmox");
 
 // Application config — set via:
-//   pulumi config set moxy:nodeName   pve
-//   pulumi config set moxy:isoFileId  local:iso/ubuntu-24.04-live-server-amd64.iso
-//   pulumi config set moxy:datastore  local-lvm
+//   pulumi config set moxy:nodeName   <node>
+//   pulumi config set moxy:datastore  <datastore>
 //   pulumi config set moxy:bridge     vmbr0
 const cfg = new pulumi.Config();
 const nodeName  = cfg.require("nodeName");
-const isoFileId = cfg.require("isoFileId");
 const datastore = cfg.get("datastore") ?? "local-lvm";
 const bridge    = cfg.get("bridge") ?? "vmbr0";
 
@@ -34,53 +32,80 @@ const provider = new proxmoxve.Provider("pve", {
 // VM specs — add more entries here to provision additional VMs
 // ---------------------------------------------------------------------------
 interface VmSpec {
-    name:    string;
-    vmId:    number;
-    cores:   number;
-    memory:  number;  // MiB
-    diskGb:  number;
+    name:          string;
+    vmId:          number;
+    cores:         number;
+    memory:        number;  // MiB
+    diskGb:        number;
+    // ISO source: provide isoUrl to have Pulumi download it, or isoFileId if
+    // the ISO is already present on the node.
+    isoUrl?:       string;  // Pulumi will download this to the node
+    isoStorageId?: string;  // storage to download into (required when isoUrl is set)
+    isoFileId?:    string;  // existing file ID, e.g. "ops:iso/file.iso"
 }
 
 const vmSpecs: VmSpec[] = [
-    { name: "ubuntu-server", vmId: 9001, cores: 2, memory: 4096, diskGb: 32 },
+    {
+        name: "ubuntu-server", vmId: 9001, cores: 2, memory: 4096, diskGb: 32,
+        isoFileId: "ops:iso/ubuntu-26.04.1-live-server-amd64.iso",
+    },
+    {
+        name: "alpine-server", vmId: 9002, cores: 2, memory: 2048, diskGb: 16,
+        isoUrl:       "https://mirror.vinehost.net/alpine/v3.24/releases/x86_64/alpine-virt-3.24.4-x86_64.iso",
+        isoStorageId: "ops",
+    },
 ];
 
 // ---------------------------------------------------------------------------
 // Virtual Machines
 // ---------------------------------------------------------------------------
-const vms = vmSpecs.map((spec) =>
-    new proxmoxve.VmLegacy(spec.name, {
+const vms = vmSpecs.map((spec) => {
+    // Download the ISO if a URL is provided; otherwise use the existing file ID.
+    let cdromFileId: pulumi.Input<string>;
+    if (spec.isoUrl) {
+        const iso = new proxmoxve.download.FileLegacy(`iso-${spec.name}`, {
+            contentType:        "iso",
+            datastoreId:        spec.isoStorageId!,
+            nodeName:           nodeName,
+            url:                spec.isoUrl,
+            overwriteUnmanaged: true,
+        }, { provider });
+        // FileLegacy.id is the Pulumi URN; build the Proxmox file ID manually.
+        cdromFileId = pulumi.interpolate`${iso.datastoreId}:${iso.contentType}/${iso.fileName}`;
+    } else if (spec.isoFileId) {
+        cdromFileId = spec.isoFileId;
+    } else {
+        throw new Error(`VM "${spec.name}": either isoUrl or isoFileId must be set`);
+    }
+
+    return new proxmoxve.VmLegacy(spec.name, {
         nodeName: nodeName,
         name:     spec.name,
         vmId:     spec.vmId,
 
         cpu: {
             cores: spec.cores,
-            type:  "x86-64-v2-AES",   // recommended for modern hosts
+            type:  "x86-64-v2-AES",
         },
 
         memory: {
             dedicated: spec.memory,
         },
 
-        // Blank system disk — the OS will be installed here from the ISO
         disks: [{
             datastoreId: datastore,
             interface:   "scsi0",
             size:        spec.diskGb,
         }],
 
-        // ISO to boot from.  fileId format: "<storage>:iso/<filename>"
-        // e.g. local:iso/ubuntu-24.04-live-server-amd64.iso
-        // The ISO must already exist on the Proxmox node (upload via UI or
-        // set moxy:isoFileId to a proxmoxve.download.FileLegacy resource id).
         cdrom: {
-            fileId:    isoFileId,
-            interface: "ide3",    // default CD-ROM slot
+            fileId:    cdromFileId,
+            interface: "ide3",
         },
 
-        // Boot CD first so the installer runs, then fall through to disk
-        bootOrders: ["ide3", "scsi0"],
+        // Tries disk first; falls back to ISO on first boot (blank disk),
+        // then boots from disk on subsequent reboots after installation.
+        bootOrders: ["scsi0", "ide3"],
 
         networkDevices: [{
             bridge: bridge,
@@ -88,18 +113,17 @@ const vms = vmSpecs.map((spec) =>
         }],
 
         operatingSystem: {
-            type: "l26",    // Linux 2.6+ / modern kernel
+            type: "l26",
         },
 
-        // Keep the QEMU agent disabled until the OS is installed and
-        // qemu-guest-agent is running — otherwise pulumi up will hang.
+        // Disabled until qemu-guest-agent is installed in the guest.
         agent: {
             enabled: false,
         },
 
         started: true,
-    }, { provider }),
-);
+    }, { provider });
+});
 
 // ---------------------------------------------------------------------------
 // Outputs

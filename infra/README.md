@@ -31,9 +31,6 @@ pulumi config set proxmox:insecure  false
 # Proxmox node name
 pulumi config set moxy:nodeName  <node>
 
-# ISO file ID — format: <storage>:iso/<filename>
-pulumi config set moxy:isoFileId  ops:iso/ubuntu-26.04.1-live-server-amd64.iso
-
 # Datastore for VM disks
 pulumi config set moxy:datastore  apps
 
@@ -58,11 +55,17 @@ pulumi destroy
 
 Defined in the `vmSpecs` array in `index.ts`. Add entries there to provision additional VMs.
 
-| Name | VM ID | Cores | Memory | Disk |
-|---|---|---|---|---|
-| ubuntu-server | 9001 | 2 | 4 GB | 32 GB |
+| Name | VM ID | Cores | Memory | Disk | ISO |
+|---|---|---|---|---|---|
+| ubuntu-server | 9001 | 2 | 4 GB | 32 GB | existing on node |
+| test-01 | 9002 | 2 | 2 GB | 16 GB | downloaded via Pulumi |
+
+Each VM spec supports two ISO sources:
+
+- `isoUrl` + `isoStorageId` — Pulumi downloads the ISO to the node's storage before creating the VM.
+- `isoFileId` — ISO is already present on the node (format: `<storage>:iso/<filename>`).
 
 ## Notes
 
-- VMs boot from the configured ISO — OS installation is manual (or via autoinstall).
+- VMs boot disk-first; on first boot the blank disk fails and falls back to the ISO installer. Subsequent reboots go straight to the installed OS — no need to eject the ISO.
 - `agent.enabled` is set to `false` by default. After installing `qemu-guest-agent` in the guest, flip it to `true` and run `pulumi up`.
